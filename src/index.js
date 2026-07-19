@@ -14,7 +14,7 @@ program
   .option('-o, --output <path>', 'Output directory', 'output')
   .option('--chunk-size <number>', 'Maximum chunk length', '350')
   .option('--limit <number>', 'Generate only first N chunks')
-  .option('--overwrite', 'Overwrite existing WAV files', false)
+  .option('--overwrite', 'Overwrite existing audio chunks', false)
   .option('--stress-dictionary <path>', 'JSON dictionary with manual stress overrides', 'config/stress-dictionary.json')
   .option('--exaggeration <number>', 'Chatterbox exaggeration', '0.25')
   .option('--cfg-weight <number>', 'Chatterbox CFG weight', '0.3')
@@ -23,8 +23,9 @@ program
   .option('--min-p <number>', 'Sampling min-p', '0.05')
   .option('--top-p <number>', 'Sampling top-p', '0.95')
   .option('--retries <number>', 'Retries for suspicious audio chunks', '2')
-  .option('--bitrate <value>', 'M4B AAC bitrate', '96k')
-  .option('--no-m4b', 'Generate WAV chunks only')
+  .option('--bitrate <value>', 'Final audio bitrate', '96k')
+  .option('--no-mp3', 'Do not generate the final MP3 audiobook')
+  .option('--no-m4b', 'Do not generate the M4B audiobook')
   .parse();
 
 const options = program.opts();
@@ -79,20 +80,42 @@ async function durationSeconds(filePath) {
   return duration;
 }
 
-async function buildM4b(book, bookDir, manifest, audioFiles, bitrate) {
-  if (!ffmpegPath || !ffprobeStatic?.path) throw new Error('Bundled ffmpeg or ffprobe executable is unavailable. Run npm install again.');
-  if (audioFiles.length === 0) throw new Error('No WAV chunks available for M4B assembly.');
+async function mergeWavChunks(bookDir, audioFiles) {
+  if (!ffmpegPath) throw new Error('Bundled ffmpeg executable is unavailable. Run npm install again.');
+  if (audioFiles.length === 0) throw new Error('No WAV chunks available for audiobook assembly.');
 
   const workDir = path.join(bookDir, '.work');
   await fs.mkdir(workDir, { recursive: true });
   const concatPath = path.join(workDir, 'concat.txt');
   const mergedWav = path.join(workDir, 'merged.wav');
-  const metadataPath = path.join(workDir, 'chapters.ffmeta');
-  const outputPath = path.join(bookDir, `${slugify(book.title)}.m4b`);
 
   await fs.writeFile(concatPath, `${audioFiles.map(concatEntry).join('\n')}\n`, 'utf8');
   console.log('Combining WAV chunks...');
   await run(ffmpegPath, ['-y', '-hide_banner', '-loglevel', 'warning', '-f', 'concat', '-safe', '0', '-i', concatPath, '-c', 'copy', mergedWav]);
+  return { workDir, mergedWav };
+}
+
+async function buildMp3(book, bookDir, mergedWav, bitrate) {
+  const outputPath = path.join(bookDir, `${slugify(book.title)}.mp3`);
+  const metadataArgs = ['-metadata', `title=${book.title}`];
+  if (book.authors.length > 0) metadataArgs.push('-metadata', `artist=${book.authors.join(', ')}`);
+
+  console.log('Encoding MP3...');
+  await run(ffmpegPath, [
+    '-y', '-hide_banner', '-loglevel', 'warning',
+    '-i', mergedWav,
+    '-map', '0:a', '-c:a', 'libmp3lame', '-b:a', bitrate,
+    ...metadataArgs,
+    outputPath,
+  ]);
+  return outputPath;
+}
+
+async function buildM4b(book, bookDir, manifest, audioFiles, mergedWav, bitrate) {
+  if (!ffmpegPath || !ffprobeStatic?.path) throw new Error('Bundled ffmpeg or ffprobe executable is unavailable. Run npm install again.');
+  const workDir = path.join(bookDir, '.work');
+  const metadataPath = path.join(workDir, 'chapters.ffmeta');
+  const outputPath = path.join(bookDir, `${slugify(book.title)}.m4b`);
 
   const durations = [];
   for (const filePath of audioFiles) durations.push(await durationSeconds(filePath));
@@ -121,8 +144,6 @@ async function buildM4b(book, bookDir, manifest, audioFiles, bitrate) {
     '-c:a', 'aac', '-b:a', bitrate, '-movflags', '+faststart',
     outputPath,
   ]);
-
-  await fs.rm(workDir, { recursive: true, force: true });
   return outputPath;
 }
 
@@ -222,9 +243,20 @@ async function main() {
     if (!(await exists(wavPath))) throw new Error(`Expected audio chunk is missing: ${wavPath}`);
   }
 
-  if (options.m4b) {
-    const outputPath = await buildM4b(book, bookDir, manifest, audioFiles, options.bitrate);
-    console.log(`Audiobook: ${outputPath}`);
+  if (options.mp3 || options.m4b) {
+    const { workDir, mergedWav } = await mergeWavChunks(bookDir, audioFiles);
+    try {
+      if (options.mp3) {
+        const outputPath = await buildMp3(book, bookDir, mergedWav, options.bitrate);
+        console.log(`MP3 audiobook: ${outputPath}`);
+      }
+      if (options.m4b) {
+        const outputPath = await buildM4b(book, bookDir, manifest, audioFiles, mergedWav, options.bitrate);
+        console.log(`M4B audiobook: ${outputPath}`);
+      }
+    } finally {
+      await fs.rm(workDir, { recursive: true, force: true });
+    }
   }
   console.log(`Project files: ${bookDir}`);
 }
