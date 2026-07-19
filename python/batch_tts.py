@@ -7,6 +7,20 @@ import torchaudio as ta
 from chatterbox.mtl_tts import ChatterboxMultilingualTTS
 
 
+def load_model() -> ChatterboxMultilingualTTS:
+    """Load V3 when supported, otherwise use the package default checkpoint."""
+    try:
+        return ChatterboxMultilingualTTS.from_pretrained(device="cuda", t3_model="v3")
+    except TypeError as error:
+        if "unexpected keyword argument 't3_model'" not in str(error):
+            raise
+        print(
+            "Installed Chatterbox does not expose t3_model; using its default multilingual checkpoint.",
+            flush=True,
+        )
+        return ChatterboxMultilingualTTS.from_pretrained(device="cuda")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate audiobook chunks with one model load")
     parser.add_argument("--job", required=True)
@@ -23,7 +37,7 @@ def main() -> None:
         return
 
     print(f"Loading Chatterbox on {torch.cuda.get_device_name(0)}...", flush=True)
-    model = ChatterboxMultilingualTTS.from_pretrained(device="cuda", t3_model="v3")
+    model = load_model()
 
     common = {
         "language_id": job.get("language", "ru"),
