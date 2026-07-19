@@ -5,18 +5,24 @@ import { Command } from 'commander';
 import ffmpegPath from 'ffmpeg-static';
 import ffprobeStatic from 'ffprobe-static';
 import { parseFb2 } from './fb2.js';
-import { chunkText } from './text.js';
+import { applyStressDictionary, chunkText } from './text.js';
 
 const program = new Command();
 program
   .requiredOption('-i, --input <path>', 'FB2 file')
   .option('-v, --voice <path>', 'Reference WAV file')
   .option('-o, --output <path>', 'Output directory', 'output')
-  .option('--chunk-size <number>', 'Maximum chunk length', '850')
+  .option('--chunk-size <number>', 'Maximum chunk length', '350')
   .option('--limit <number>', 'Generate only first N chunks')
   .option('--overwrite', 'Overwrite existing WAV files', false)
-  .option('--exaggeration <number>', 'Chatterbox exaggeration', '0.5')
-  .option('--cfg-weight <number>', 'Chatterbox CFG weight', '0.5')
+  .option('--stress-dictionary <path>', 'JSON dictionary with manual stress overrides', 'config/stress-dictionary.json')
+  .option('--exaggeration <number>', 'Chatterbox exaggeration', '0.25')
+  .option('--cfg-weight <number>', 'Chatterbox CFG weight', '0.3')
+  .option('--temperature <number>', 'Sampling temperature', '0.72')
+  .option('--repetition-penalty <number>', 'Sampling repetition penalty', '1.3')
+  .option('--min-p <number>', 'Sampling min-p', '0.05')
+  .option('--top-p <number>', 'Sampling top-p', '0.95')
+  .option('--retries <number>', 'Retries for suspicious audio chunks', '2')
   .option('--bitrate <value>', 'M4B AAC bitrate', '96k')
   .option('--no-m4b', 'Generate WAV chunks only')
   .parse();
@@ -30,6 +36,12 @@ function slugify(value) {
 
 async function exists(filePath) {
   try { await fs.access(filePath); return true; } catch { return false; }
+}
+
+async function readJsonIfExists(filePath, fallback) {
+  if (!(await exists(filePath))) return fallback;
+  const parsed = JSON.parse(await fs.readFile(filePath, 'utf8'));
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : fallback;
 }
 
 function run(command, args, { capture = false } = {}) {
@@ -114,17 +126,33 @@ async function buildM4b(book, bookDir, manifest, audioFiles, bitrate) {
   return outputPath;
 }
 
+function numberOption(name, value, { min, max, integer = false }) {
+  const parsed = integer ? Number.parseInt(value, 10) : Number.parseFloat(value);
+  if (!Number.isFinite(parsed) || parsed < min || parsed > max || (integer && !Number.isInteger(parsed))) {
+    throw new Error(`--${name} must be ${integer ? 'an integer' : 'a number'} between ${min} and ${max}`);
+  }
+  return parsed;
+}
+
 async function main() {
   const inputPath = path.resolve(options.input);
   const voicePath = options.voice ? path.resolve(options.voice) : null;
-  const chunkSize = Number.parseInt(options.chunkSize, 10);
-  const limit = options.limit ? Number.parseInt(options.limit, 10) : null;
-  if (!Number.isInteger(chunkSize) || chunkSize < 200) throw new Error('--chunk-size must be an integer of at least 200');
-  if (limit !== null && (!Number.isInteger(limit) || limit < 1)) throw new Error('--limit must be a positive integer');
+  const dictionaryPath = path.resolve(options.stressDictionary);
+  const chunkSize = numberOption('chunk-size', options.chunkSize, { min: 180, max: 700, integer: true });
+  const limit = options.limit ? numberOption('limit', options.limit, { min: 1, max: 1_000_000, integer: true }) : null;
+  const retries = numberOption('retries', options.retries, { min: 0, max: 5, integer: true });
+  const exaggeration = numberOption('exaggeration', options.exaggeration, { min: 0, max: 2 });
+  const cfgWeight = numberOption('cfg-weight', options.cfgWeight, { min: 0, max: 1 });
+  const temperature = numberOption('temperature', options.temperature, { min: 0.2, max: 1.5 });
+  const repetitionPenalty = numberOption('repetition-penalty', options.repetitionPenalty, { min: 1, max: 2 });
+  const minP = numberOption('min-p', options.minP, { min: 0, max: 1 });
+  const topP = numberOption('top-p', options.topP, { min: 0.1, max: 1 });
+
   if (!(await exists(inputPath))) throw new Error(`Input file not found: ${inputPath}`);
   if (voicePath && !(await exists(voicePath))) throw new Error(`Voice file not found: ${voicePath}`);
   if (!(await exists(pythonPath()))) throw new Error('Project Python environment is missing. Run scripts/setup-windows.ps1 first.');
 
+  const stressDictionary = await readJsonIfExists(dictionaryPath, {});
   const book = await parseFb2(inputPath);
   if (book.chapters.length === 0) throw new Error('No readable chapters found in the FB2 file.');
   const bookDir = path.resolve(options.output, slugify(book.title));
@@ -132,10 +160,11 @@ async function main() {
   await fs.mkdir(chunksDir, { recursive: true });
 
   const manifest = {
-    version: 1,
+    version: 2,
     title: book.title,
     authors: book.authors,
     source: inputPath,
+    stressDictionary: await exists(dictionaryPath) ? dictionaryPath : null,
     updatedAt: new Date().toISOString(),
     chapters: [],
   };
@@ -147,12 +176,14 @@ async function main() {
   console.log(`Book: ${book.title}`);
   console.log(`Authors: ${book.authors.join(', ') || 'Unknown'}`);
   console.log(`Chapters: ${book.chapters.length}`);
+  console.log(`Stress overrides: ${Object.keys(stressDictionary).length}`);
 
   outer:
   for (let chapterIndex = 0; chapterIndex < book.chapters.length; chapterIndex += 1) {
     const chapter = book.chapters[chapterIndex];
     const chapterManifest = { title: chapter.title, chunks: [] };
-    const chunks = chunkText(chapter.text, chunkSize);
+    const preparedText = applyStressDictionary(chapter.text, stressDictionary);
+    const chunks = chunkText(preparedText, chunkSize);
 
     for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
       if (limit !== null && selected >= limit) break outer;
@@ -178,7 +209,8 @@ async function main() {
   if (pending.length > 0) {
     const jobPath = path.join(bookDir, 'job.json');
     await fs.writeFile(jobPath, JSON.stringify({
-      language: 'ru', voice: voicePath, exaggeration: Number(options.exaggeration), cfgWeight: Number(options.cfgWeight), items: pending,
+      language: 'ru', voice: voicePath, exaggeration, cfgWeight, temperature,
+      repetitionPenalty, minP, topP, retries, items: pending,
     }, null, 2), 'utf8');
     console.log(`Generating ${pending.length} chunks. The model will be loaded once.`);
     await run(pythonPath(), ['python/batch_tts.py', '--job', jobPath]);
