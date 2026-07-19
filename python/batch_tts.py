@@ -88,7 +88,7 @@ def main() -> None:
     for index, item in enumerate(items, start=1):
         text_path = Path(item["textFile"]).resolve()
         output = Path(item["output"]).resolve()
-        temporary = output.with_suffix(output.suffix + ".part")
+        temporary = output.with_name(f"{output.stem}.part{output.suffix}")
         text = text_path.read_text(encoding="utf-8").strip()
         if not text:
             raise ValueError(f"Empty chunk: {text_path}")
@@ -100,7 +100,7 @@ def main() -> None:
         try:
             with torch.inference_mode():
                 wav = model.generate(text, **common)
-            ta.save(str(temporary), wav.cpu(), model.sr, format="wav")
+            ta.save(str(temporary), wav.cpu(), model.sr)
             temporary.replace(output)
         except Exception:
             temporary.unlink(missing_ok=True)
