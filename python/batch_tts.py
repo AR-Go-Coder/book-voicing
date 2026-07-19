@@ -1,5 +1,6 @@
 import argparse
 import json
+import random
 from pathlib import Path
 
 import perth
@@ -45,17 +46,59 @@ from chatterbox.mtl_tts import ChatterboxMultilingualTTS
 
 
 def load_model() -> ChatterboxMultilingualTTS:
-    """Load V3 when supported, otherwise use the package default checkpoint."""
+    """Require Multilingual V3 instead of silently falling back to V2."""
     try:
-        return ChatterboxMultilingualTTS.from_pretrained(device="cuda", t3_model="v3")
+        model = ChatterboxMultilingualTTS.from_pretrained(device="cuda", t3_model="v3")
     except TypeError as error:
-        if "unexpected keyword argument 't3_model'" not in str(error):
-            raise
-        print(
-            "Installed Chatterbox does not expose t3_model; using its default multilingual checkpoint.",
-            flush=True,
-        )
-        return ChatterboxMultilingualTTS.from_pretrained(device="cuda")
+        if "unexpected keyword argument 't3_model'" in str(error):
+            raise RuntimeError(
+                "This Chatterbox installation does not support Multilingual V3. "
+                "Rebuild the environment with: powershell -ExecutionPolicy Bypass "
+                "-File scripts/setup-windows.ps1 -ResetVenv"
+            ) from error
+        raise
+    print("Loaded Chatterbox Multilingual V3.", flush=True)
+    return model
+
+
+def duration_seconds(wav: torch.Tensor, sample_rate: int) -> float:
+    return float(wav.shape[-1]) / float(sample_rate)
+
+
+def suspicious_duration(text: str, duration: float) -> bool:
+    # Russian narration normally falls roughly between 7 and 22 visible chars/second.
+    visible_chars = max(1, sum(not char.isspace() for char in text))
+    chars_per_second = visible_chars / max(duration, 0.01)
+    return duration < 0.7 or chars_per_second < 5.0 or chars_per_second > 28.0
+
+
+def generate_with_retries(model, text: str, common: dict, retries: int):
+    last_wav = None
+    for attempt in range(retries + 1):
+        seed = random.SystemRandom().randint(1, 2_147_483_647)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+        params = dict(common)
+        if attempt > 0:
+            params["temperature"] = max(0.55, float(common["temperature"]) - 0.08 * attempt)
+            params["repetition_penalty"] = min(1.5, float(common["repetition_penalty"]) + 0.08 * attempt)
+            print(
+                f"  retry {attempt}/{retries}: seed={seed}, "
+                f"temperature={params['temperature']:.2f}, "
+                f"repetition_penalty={params['repetition_penalty']:.2f}",
+                flush=True,
+            )
+
+        with torch.inference_mode():
+            wav = model.generate(text, **params)
+        last_wav = wav
+        duration = duration_seconds(wav, model.sr)
+        if not suspicious_duration(text, duration):
+            return wav, duration
+        print(f"  suspicious duration {duration:.2f}s for {len(text)} chars", flush=True)
+
+    return last_wav, duration_seconds(last_wav, model.sr)
 
 
 def main() -> None:
@@ -78,9 +121,14 @@ def main() -> None:
 
     common = {
         "language_id": job.get("language", "ru"),
-        "exaggeration": float(job.get("exaggeration", 0.5)),
-        "cfg_weight": float(job.get("cfgWeight", 0.5)),
+        "exaggeration": float(job.get("exaggeration", 0.25)),
+        "cfg_weight": float(job.get("cfgWeight", 0.3)),
+        "temperature": float(job.get("temperature", 0.72)),
+        "repetition_penalty": float(job.get("repetitionPenalty", 1.3)),
+        "min_p": float(job.get("minP", 0.05)),
+        "top_p": float(job.get("topP", 0.95)),
     }
+    retries = int(job.get("retries", 2))
     voice = job.get("voice")
     if voice:
         common["audio_prompt_path"] = str(Path(voice).resolve())
@@ -98,10 +146,10 @@ def main() -> None:
         print(f"[{index}/{len(items)}] {output.name}", flush=True)
 
         try:
-            with torch.inference_mode():
-                wav = model.generate(text, **common)
+            wav, duration = generate_with_retries(model, text, common, retries)
             ta.save(str(temporary), wav.cpu(), model.sr)
             temporary.replace(output)
+            print(f"  saved {duration:.2f}s", flush=True)
         except Exception:
             temporary.unlink(missing_ok=True)
             raise
