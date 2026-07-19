@@ -36,6 +36,29 @@ function Test-Python311([string]$Command, [string[]]$PrefixArgs = @()) {
     return $null
 }
 
+function Test-PipConsistency([string]$Python) {
+    $output = & $Python -m pip check 2>&1
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -eq 0) {
+        $output | ForEach-Object { Write-Host $_ }
+        return
+    }
+
+    $lines = @($output | ForEach-Object { $_.ToString().Trim() } | Where-Object { $_ })
+    $unexpected = @($lines | Where-Object {
+        $_ -notmatch '^gradio .* requires typer.*but you have typer ' -and
+        $_ -notmatch '^typer-slim .* requires typer.*but you have typer '
+    })
+
+    if ($unexpected.Count -gt 0) {
+        $lines | ForEach-Object { Write-Host $_ }
+        throw "pip dependency check found unexpected conflicts"
+    }
+
+    Write-Warning 'Ignoring the known optional Typer CLI conflict between spaCy 3.6 and Chatterbox UI packages.'
+    $lines | ForEach-Object { Write-Host "  $_" }
+}
+
 Require-Command node 'Install Node.js 20 or newer.'
 Require-Command npm 'Install Node.js 20 or newer.'
 Require-Command nvidia-smi 'Install or repair the NVIDIA display driver.'
@@ -107,7 +130,7 @@ Invoke-Native { & $python -m pip install --force-reinstall --no-deps "torch==$To
 
 Write-Host ''
 Write-Host 'Checking Python dependency consistency...'
-Invoke-Native { & $python -m pip check } 'pip dependency check'
+Test-PipConsistency $python
 
 Write-Host ''
 Write-Host 'Running strict GPU and Chatterbox checks...'
