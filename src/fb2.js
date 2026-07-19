@@ -7,6 +7,12 @@ function asArray(value) {
   return Array.isArray(value) ? value : [value];
 }
 
+function removeInlineNotes(xml) {
+  return xml
+    .replace(/<a\b(?=[^>]*\btype\s*=\s*["']note["'])[^>]*>[\s\S]*?<\/a>/giu, ' ')
+    .replace(/<a\b(?=[^>]*\bl:href\s*=\s*["']#n_[^"']+["'])[^>]*>[\s\S]*?<\/a>/giu, ' ');
+}
+
 function flattenText(node) {
   if (node == null) return '';
   if (typeof node === 'string' || typeof node === 'number') return String(node);
@@ -54,7 +60,8 @@ function collectLeafSections(section, chapters, counter) {
 }
 
 export async function parseFb2(filePath) {
-  const xml = await fs.readFile(filePath, 'utf8');
+  const sourceXml = await fs.readFile(filePath, 'utf8');
+  const xml = removeInlineNotes(sourceXml);
   const parser = new XMLParser({
     ignoreAttributes: false,
     removeNSPrefix: true,
