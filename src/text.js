@@ -98,11 +98,25 @@ export function normalizeNumbers(text) {
     .replace(/\b\d{1,6}\b/gu, (number) => numberToWords(Number(number)));
 }
 
+function cleanServiceSymbols(text) {
+  return text
+    .replace(/[©®™℠]/gu, ' ')
+    .replace(/[•·▪▫◦‣⁃◆◇■□●○★☆]/gu, ' ')
+    .replace(/[†‡※§¶]/gu, ' ')
+    .replace(/[*_~^|\\/]+/gu, ' ')
+    .replace(/[<>={}]+/gu, ' ')
+    .replace(/-{3,}/gu, ' - ')
+    .replace(/\.{4,}/gu, '…')
+    .replace(/([!?]){2,}/gu, '$1')
+    .replace(/[,;:]{2,}/gu, (marks) => marks[0])
+    .replace(/[\u200B-\u200D\u2060\uFEFF]/gu, ' ');
+}
+
 export function normalizeText(value) {
-  const cleaned = String(value ?? '')
+  const cleaned = cleanServiceSymbols(String(value ?? '')
     .normalize('NFC')
     .replace(/\[\s*\d+\s*\]/g, ' ')
-    .replace(/\u00a0/g, ' ')
+    .replace(/\u00a0/g, ' '))
     .replace(/[ \t]+/g, ' ')
     .replace(/[–—]/g, ' - ')
     .replace(/\s*\n\s*/g, '\n')
