@@ -13,15 +13,28 @@ function flattenText(node) {
   if (Array.isArray(node)) return node.map(flattenText).join(' ');
   if (typeof node === 'object') {
     return Object.entries(node)
-      .filter(([key]) => !key.startsWith('@_') && key !== 'binary' && key !== 'section')
+      .filter(([key]) => !key.startsWith('@_') && key !== 'binary' && key !== 'section' && key !== 'title')
       .map(([, value]) => flattenText(value))
       .join(' ');
   }
   return '';
 }
 
+function titleText(node) {
+  if (node == null) return '';
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(titleText).join(' ');
+  if (typeof node === 'object') {
+    return Object.entries(node)
+      .filter(([key]) => !key.startsWith('@_') && key !== 'binary')
+      .map(([, value]) => titleText(value))
+      .join(' ');
+  }
+  return '';
+}
+
 function sectionTitle(section, fallback) {
-  const title = normalizeText(flattenText(section?.title));
+  const title = normalizeText(titleText(section?.title));
   return title || fallback;
 }
 
@@ -54,13 +67,13 @@ export async function parseFb2(filePath) {
   const fictionBook = parsed.FictionBook ?? parsed;
   const description = fictionBook.description ?? {};
   const titleInfo = description['title-info'] ?? {};
-  const bookTitle = normalizeText(flattenText(titleInfo['book-title'])) || 'Untitled book';
+  const bookTitle = normalizeText(titleText(titleInfo['book-title'])) || 'Untitled book';
 
   const authors = asArray(titleInfo.author)
     .map((author) => normalizeText([
-      flattenText(author['first-name']),
-      flattenText(author['middle-name']),
-      flattenText(author['last-name']),
+      titleText(author['first-name']),
+      titleText(author['middle-name']),
+      titleText(author['last-name']),
     ].filter(Boolean).join(' ')))
     .filter(Boolean);
 
