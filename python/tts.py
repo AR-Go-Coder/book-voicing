@@ -6,6 +6,20 @@ import torchaudio as ta
 from chatterbox.mtl_tts import ChatterboxMultilingualTTS
 
 
+def load_model() -> ChatterboxMultilingualTTS:
+    """Load V3 when supported, otherwise use the package default checkpoint."""
+    try:
+        return ChatterboxMultilingualTTS.from_pretrained(device="cuda", t3_model="v3")
+    except TypeError as error:
+        if "unexpected keyword argument 't3_model'" not in str(error):
+            raise
+        print(
+            "Installed Chatterbox does not expose t3_model; using its default multilingual checkpoint.",
+            flush=True,
+        )
+        return ChatterboxMultilingualTTS.from_pretrained(device="cuda")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate one WAV chunk with Chatterbox Multilingual")
     parser.add_argument("--text-file", required=True)
@@ -29,8 +43,7 @@ def main() -> None:
         raise ValueError(f"Text file is empty: {text_path}")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    model = ChatterboxMultilingualTTS.from_pretrained(device="cuda", t3_model="v3")
+    model = load_model()
     kwargs = {
         "language_id": args.language,
         "exaggeration": args.exaggeration,
