@@ -5,6 +5,7 @@ function escapeRegExp(value) {
 export function normalizeText(value) {
   return String(value ?? '')
     .normalize('NFC')
+    .replace(/\[\s*\d+\s*\]/g, ' ')
     .replace(/\u00a0/g, ' ')
     .replace(/[ \t]+/g, ' ')
     .replace(/[–—]/g, ' - ')
