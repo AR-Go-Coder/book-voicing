@@ -18,12 +18,11 @@ const ORDINAL_ENDINGS = {
     100: 'сотый', 200: 'двухсотый', 300: 'трёхсотый', 400: 'четырёхсотый', 500: 'пятисотый', 600: 'шестисотый',
     700: 'семисотый', 800: 'восьмисотый', 900: 'девятисотый', 1000: 'тысячный', 2000: 'двухтысячный',
   },
-  genitive: {},
-  prepositional: {},
 };
 
 function declineOrdinal(word, grammaticalCase) {
   if (grammaticalCase === 'nominative') return word;
+  if (word === 'третий') return grammaticalCase === 'genitive' ? 'третьего' : 'третьем';
   if (word.endsWith('ий')) return grammaticalCase === 'genitive' ? `${word.slice(0, -2)}его` : `${word.slice(0, -2)}ем`;
   if (word.endsWith('ый') || word.endsWith('ой')) return grammaticalCase === 'genitive' ? `${word.slice(0, -2)}ого` : `${word.slice(0, -2)}ом`;
   return word;
