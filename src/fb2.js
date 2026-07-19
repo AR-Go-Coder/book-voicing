@@ -13,7 +13,7 @@ function flattenText(node) {
   if (Array.isArray(node)) return node.map(flattenText).join(' ');
   if (typeof node === 'object') {
     return Object.entries(node)
-      .filter(([key]) => !key.startsWith('@_') && key !== 'binary')
+      .filter(([key]) => !key.startsWith('@_') && key !== 'binary' && key !== 'section')
       .map(([, value]) => flattenText(value))
       .join(' ');
   }
@@ -23,6 +23,21 @@ function flattenText(node) {
 function sectionTitle(section, fallback) {
   const title = normalizeText(flattenText(section?.title));
   return title || fallback;
+}
+
+function collectLeafSections(section, chapters, counter) {
+  const nested = asArray(section?.section);
+  const ownText = normalizeText(flattenText(section));
+
+  if (ownText) {
+    chapters.push({
+      title: sectionTitle(section, `Глава ${counter.value}`),
+      text: ownText,
+    });
+    counter.value += 1;
+  }
+
+  for (const child of nested) collectLeafSections(child, chapters, counter);
 }
 
 export async function parseFb2(filePath) {
@@ -49,38 +64,21 @@ export async function parseFb2(filePath) {
     ].filter(Boolean).join(' ')))
     .filter(Boolean);
 
-  const bodies = asArray(fictionBook.body);
+  const bodies = asArray(fictionBook.body).filter((body) => body?.['@_name'] !== 'notes');
   const chapters = [];
-  let chapterNumber = 1;
+  const counter = { value: 1 };
 
   for (const body of bodies) {
-    for (const section of asArray(body.section)) {
-      const nested = asArray(section.section);
-      if (nested.length > 0) {
-        for (const child of nested) {
-          const text = normalizeText(flattenText(child));
-          if (!text) continue;
-          chapters.push({
-            title: sectionTitle(child, `Глава ${chapterNumber}`),
-            text,
-          });
-          chapterNumber += 1;
-        }
-      } else {
-        const text = normalizeText(flattenText(section));
-        if (!text) continue;
-        chapters.push({
-          title: sectionTitle(section, `Глава ${chapterNumber}`),
-          text,
-        });
-        chapterNumber += 1;
+    const sections = asArray(body.section);
+    if (sections.length === 0) {
+      const text = normalizeText(flattenText(body));
+      if (text) {
+        chapters.push({ title: `Глава ${counter.value}`, text });
+        counter.value += 1;
       }
+      continue;
     }
-  }
-
-  if (chapters.length === 0) {
-    const text = normalizeText(flattenText(bodies));
-    if (text) chapters.push({ title: 'Книга', text });
+    for (const section of sections) collectLeafSections(section, chapters, counter);
   }
 
   return {
