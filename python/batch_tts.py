@@ -2,8 +2,45 @@ import argparse
 import json
 from pathlib import Path
 
+import perth
 import torch
 import torchaudio as ta
+
+
+class PassThroughWatermarker:
+    """Fallback used only when Perth cannot expose its native watermarker."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        pass
+
+    def apply_watermark(self, audio, *args, **kwargs):
+        return audio
+
+    def get_watermark(self, audio, *args, **kwargs):
+        return 0.0
+
+
+def prepare_perth() -> None:
+    if callable(getattr(perth, "PerthImplicitWatermarker", None)):
+        return
+
+    try:
+        from perth.perth_net.perth_net_implicit.perth_watermarker import (
+            PerthImplicitWatermarker,
+        )
+
+        perth.PerthImplicitWatermarker = PerthImplicitWatermarker
+        print("Recovered PerthImplicitWatermarker from its internal module.", flush=True)
+    except Exception as error:
+        perth.PerthImplicitWatermarker = PassThroughWatermarker
+        print(
+            "Warning: Perth watermarker is unavailable; continuing without audio watermarking. "
+            f"Reason: {type(error).__name__}: {error}",
+            flush=True,
+        )
+
+
+prepare_perth()
 from chatterbox.mtl_tts import ChatterboxMultilingualTTS
 
 
