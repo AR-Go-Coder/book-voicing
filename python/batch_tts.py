@@ -1,6 +1,7 @@
 import argparse
 import json
 import random
+import re
 from pathlib import Path
 
 import perth
@@ -45,6 +46,8 @@ from chatterbox.mtl_tts import ChatterboxMultilingualTTS
 
 
 MAX_GENERATION_DURATION = 39.5
+MAX_SPLIT_DEPTH = 3
+SPLIT_PAUSE_SECONDS = 0.12
 
 
 def load_model() -> ChatterboxMultilingualTTS:
@@ -79,6 +82,28 @@ def suspicious_duration(text: str, duration: float) -> bool:
     return duration < 0.7 or chars_per_second < 5.0 or chars_per_second > 28.0
 
 
+def split_text_near_middle(text: str) -> tuple[str, str]:
+    middle = len(text) // 2
+    candidates = []
+
+    for match in re.finditer(r"[.!?…;:]\s+", text):
+        candidates.append(match.end())
+
+    if not candidates:
+        for match in re.finditer(r",\s+", text):
+            candidates.append(match.end())
+
+    if not candidates:
+        for match in re.finditer(r"\s+", text):
+            candidates.append(match.end())
+
+    if not candidates:
+        return text, ""
+
+    split_at = min(candidates, key=lambda position: abs(position - middle))
+    return text[:split_at].strip(), text[split_at:].strip()
+
+
 def generate_with_retries(model, text: str, common: dict, retries: int):
     last_wav = None
     last_duration = 0.0
@@ -103,7 +128,7 @@ def generate_with_retries(model, text: str, common: dict, retries: int):
         last_wav = wav
         last_duration = duration_seconds(wav, model.sr)
         if not suspicious_duration(text, last_duration):
-            return wav, last_duration
+            return wav, last_duration, True
 
         reason = "generation token limit" if last_duration >= MAX_GENERATION_DURATION else "abnormal speech rate"
         print(
@@ -111,11 +136,39 @@ def generate_with_retries(model, text: str, common: dict, retries: int):
             flush=True,
         )
 
+    return last_wav, last_duration, False
+
+
+def generate_resilient(model, text: str, common: dict, retries: int, depth: int = 0):
+    wav, duration, successful = generate_with_retries(model, text, common, retries)
+    if successful:
+        return wav, duration
+
+    if depth >= MAX_SPLIT_DEPTH or len(text) < 80:
+        print(
+            f"  warning: keeping the last result after retries at split depth {depth}",
+            flush=True,
+        )
+        return wav, duration
+
+    left, right = split_text_near_middle(text)
+    if not left or not right:
+        print("  warning: could not split stubborn chunk; keeping the last result", flush=True)
+        return wav, duration
+
     print(
-        f"  warning: keeping the last result after {retries + 1} unsuccessful attempts",
+        f"  fallback split {len(text)} chars -> {len(left)} + {len(right)}",
         flush=True,
     )
-    return last_wav, last_duration
+    left_wav, _ = generate_resilient(model, left, common, retries, depth + 1)
+    right_wav, _ = generate_resilient(model, right, common, retries, depth + 1)
+    pause = torch.zeros(
+        (*left_wav.shape[:-1], int(model.sr * SPLIT_PAUSE_SECONDS)),
+        dtype=left_wav.dtype,
+        device=left_wav.device,
+    )
+    combined = torch.cat((left_wav, pause, right_wav), dim=-1)
+    return combined, duration_seconds(combined, model.sr)
 
 
 def main() -> None:
@@ -163,7 +216,7 @@ def main() -> None:
         print(f"[{index}/{len(items)}] {output.name}", flush=True)
 
         try:
-            wav, duration = generate_with_retries(model, text, common, retries)
+            wav, duration = generate_resilient(model, text, common, retries)
             ta.save(str(temporary), wav.cpu(), model.sr)
             temporary.replace(output)
             print(f"  saved {duration:.2f}s", flush=True)
