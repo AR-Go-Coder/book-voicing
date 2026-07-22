@@ -29,7 +29,6 @@ def prepare_perth() -> None:
         from perth.perth_net.perth_net_implicit.perth_watermarker import (
             PerthImplicitWatermarker,
         )
-
         perth.PerthImplicitWatermarker = PerthImplicitWatermarker
         print("Recovered PerthImplicitWatermarker from its internal module.", flush=True)
     except Exception as error:
@@ -43,6 +42,9 @@ def prepare_perth() -> None:
 
 prepare_perth()
 from chatterbox.mtl_tts import ChatterboxMultilingualTTS
+
+
+MAX_GENERATION_DURATION = 39.5
 
 
 def load_model() -> ChatterboxMultilingualTTS:
@@ -66,6 +68,11 @@ def duration_seconds(wav: torch.Tensor, sample_rate: int) -> float:
 
 
 def suspicious_duration(text: str, duration: float) -> bool:
+    # Chatterbox produces about 39.96 seconds when it reaches its 1000-token cap.
+    # Such output is usually unfinished or stuck in a repetition loop.
+    if duration >= MAX_GENERATION_DURATION:
+        return True
+
     # Russian narration normally falls roughly between 7 and 22 visible chars/second.
     visible_chars = max(1, sum(not char.isspace() for char in text))
     chars_per_second = visible_chars / max(duration, 0.01)
@@ -74,6 +81,7 @@ def suspicious_duration(text: str, duration: float) -> bool:
 
 def generate_with_retries(model, text: str, common: dict, retries: int):
     last_wav = None
+    last_duration = 0.0
     for attempt in range(retries + 1):
         seed = random.SystemRandom().randint(1, 2_147_483_647)
         torch.manual_seed(seed)
@@ -93,12 +101,21 @@ def generate_with_retries(model, text: str, common: dict, retries: int):
         with torch.inference_mode():
             wav = model.generate(text, **params)
         last_wav = wav
-        duration = duration_seconds(wav, model.sr)
-        if not suspicious_duration(text, duration):
-            return wav, duration
-        print(f"  suspicious duration {duration:.2f}s for {len(text)} chars", flush=True)
+        last_duration = duration_seconds(wav, model.sr)
+        if not suspicious_duration(text, last_duration):
+            return wav, last_duration
 
-    return last_wav, duration_seconds(last_wav, model.sr)
+        reason = "generation token limit" if last_duration >= MAX_GENERATION_DURATION else "abnormal speech rate"
+        print(
+            f"  suspicious duration {last_duration:.2f}s for {len(text)} chars ({reason})",
+            flush=True,
+        )
+
+    print(
+        f"  warning: keeping the last result after {retries + 1} unsuccessful attempts",
+        flush=True,
+    )
+    return last_wav, last_duration
 
 
 def main() -> None:
